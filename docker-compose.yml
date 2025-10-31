@@ -1,0 +1,31 @@
+services:
+  geth:
+    image: ghcr.io/debelio/go-ethereum:latest
+    container_name: geth-devnet
+    ports:
+      - "8545:8545" # HTTP JSON-RPC endpoint
+      - "8546:8546" # websocket JSON-RPC endpoint
+      - "30303:30303" # P2P TCP port (not used in dev mode but mapped for future use)
+    volumes:
+      - geth-dev-data:/root # named volume stores blockchain data across restarts
+    command:
+      - --dev # development mode
+      - --datadir=/root/.ethereum # default data directory inside container
+      - --http # enable HTTP-RPC server
+      - --http.addr=0.0.0.0 # bind to all interfaces, accessible from host
+      - --http.port=8545 # default HTTP-RPC port
+      - --http.api=eth,net,web3,personal,admin,debug,miner # APIs available over HTTP-RPC
+      - --http.corsdomain=* # Allow all CORS origins
+      - --http.vhosts=* # Allow all virtual hosts
+      - --ws # enable websocket-rpc server
+      - --ws.addr=0.0.0.0 # websocket bind address
+      - --ws.port=8546 # default websocket-rpc port
+      - --ws.api=eth,net,web3,personal,admin,debug,miner # same as HTTP APIs
+      - --ws.origins=* # Allow all origins
+      - --dev.period=5 # create a new block every 5 seconds
+      - --verbosity=3 # logging level
+volumes:
+  # Stores geth blockchain data, keystore, and configuration
+  # Data persists across container restarts and removals
+  # Use 'docker-compose down -v' to remove
+  geth-dev-data:

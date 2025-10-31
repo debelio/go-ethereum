@@ -145,15 +145,54 @@ One of the quickest ways to get Ethereum up and running on your machine is by us
 Docker:
 
 ```shell
-docker run -d --name ethereum-node -v /Users/alice/ethereum:/root \
+$ docker run -d --name ethereum-node -v geth-data:/root \
            -p 8545:8545 -p 30303:30303 \
-           ethereum/client-go
+           ghcr.io/debelio/go-ethereum:latest
 ```
 
 This will start `geth` in snap-sync mode with a DB memory allowance of 1GB, as the
-above command does.  It will also create a persistent volume in your home directory for
-saving your blockchain as well as map the default ports. There is also an `alpine` tag
-available for a slim version of the image.
+above command does.  It will also create a persistent named volume for
+saving your blockchain as well as map the default ports.
+
+For a local development network, use Docker Compose:
+
+```shell
+$ docker-compose up -d
+```
+
+This starts a single-node devnet with HTTP RPC on port 8545 and WebSocket on port 8546.
+
+Test the HTTP endpoint:
+
+```shell
+$ curl -X POST -H "Content-Type: application/json" \
+  --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+  http://localhost:8545
+```
+
+Test the WebSocket endpoint ([websocat](https://github.com/vi/websocat) can be used):
+
+```shell
+$ echo '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' | websocat ws://localhost:8546
+```
+
+The devnet uses a Docker named volume for data persistence. To inspect the volume contents:
+
+```shell
+$ docker exec -it geth-devnet ls -la /root/.ethereum
+```
+
+To view detailed volume information:
+
+```shell
+$ docker volume inspect go-ethereum_geth-dev-data
+```
+
+To remove all data and start fresh:
+
+```shell
+$ docker-compose down -v
+```
 
 Do not forget `--http.addr 0.0.0.0`, if you want to access RPC from other containers
 and/or hosts. By default, `geth` binds to the local interface and RPC endpoints are not
