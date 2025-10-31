@@ -1,0 +1,150 @@
+# GitHub Actions workflow for building and pushing Docker images to GitHub Container Registry
+# This workflow is triggered when a PR with the "CI:Build" label is merged
+# Follows the upstream ethereum/go-ethereum Docker build strategy
+name: Build and Push Docker Image
+
+# Trigger configuration
+on:
+  pull_request:
+    # Only trigger when a PR is closed (includes merged PRs)
+    types: [closed]
+    # Only for PRs targeting the master branch
+    branches:
+      - master
+
+jobs:
+  build-and-push:
+    # Conditional execution: only run if PR was actually merged (not just closed)
+    # AND the PR has the "CI:Build" label attached
+    if: github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'CI:Build')
+    runs-on: ubuntu-latest
+
+    # Minimal permissions following principle of least privilege
+    permissions:
+      contents: read # Required to checkout the repository
+      packages: write # Required to push images to GitHub Container Registry
+
+    steps:
+      # Step 1: Checkout the repository code
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Include git submodules (required for go-ethereum dependencies)
+          submodules: true
+          # Fetch all history for proper version tagging
+          fetch-depth: 0
+
+      # Step 2: Set up Docker Buildx
+      # Buildx provides advanced Docker build capabilities including:
+      # - Multi-platform builds (amd64, arm64)
+      # - Advanced caching mechanisms
+      # - BuildKit features for faster builds
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Step 3: Authenticate with GitHub Container Registry (ghcr.io)
+      # Uses the built-in GITHUB_TOKEN which is automatically provided by GitHub Actions
+      # No need to create or configure additional secrets
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io # GitHub Container Registry URL
+          username: ${{ github.actor }} # The user who triggered the workflow
+          password: ${{ secrets.GITHUB_TOKEN }} # Automatically provided token
+
+      # Step 4: Determine Docker tags based on git context
+      # Follows upstream ethereum/go-ethereum tagging strategy:
+      # - master branch -> "latest"
+      # - version tags (vX.Y.Z) -> "stable", "vX.Y.Z", "release-X.Y"
+      - name: Determine Docker tags
+        id: tags
+        run: |
+          IMAGE_NAME="ghcr.io/${{ github.repository }}"
+          TAGS=""
+          ALLTOOLS_TAGS=""
+
+          # Get version from git (e.g., v1.13.0 or v1.13.0-123-gabcdef)
+          VERSION=$(git describe --tags --always)
+
+          # Check if this is a version tag (e.g., v1.13.0)
+          if [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            # Extract major.minor from version (e.g., v1.13.0 -> 1.13)
+            MAJOR_MINOR=$(echo $VERSION | sed -E 's/^v([0-9]+\.[0-9]+)\.[0-9]+$/\1/')
+
+            # Version tag builds get: stable, vX.Y.Z, release-X.Y
+            TAGS="${IMAGE_NAME}:stable"
+            TAGS="${TAGS},${IMAGE_NAME}:${VERSION}"
+            TAGS="${TAGS},${IMAGE_NAME}:release-${MAJOR_MINOR}"
+
+            # Alltools variants with prefix
+            ALLTOOLS_TAGS="${IMAGE_NAME}:alltools-stable"
+            ALLTOOLS_TAGS="${ALLTOOLS_TAGS},${IMAGE_NAME}:alltools-${VERSION}"
+            ALLTOOLS_TAGS="${ALLTOOLS_TAGS},${IMAGE_NAME}:alltools-release-${MAJOR_MINOR}"
+          else
+            # Master branch builds get: latest
+            TAGS="${IMAGE_NAME}:latest"
+            ALLTOOLS_TAGS="${IMAGE_NAME}:alltools-latest"
+          fi
+
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "alltools_tags=${ALLTOOLS_TAGS}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      # Step 5: Extract commit information for build arguments
+      # These match upstream's COMMIT, VERSION, BUILDNUM pattern
+      - name: Get commit info
+        id: commit_info
+        run: |
+          echo "commit=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "version=$(git describe --tags --always)" >> $GITHUB_OUTPUT
+          echo "buildnum=${{ github.run_number }}" >> $GITHUB_OUTPUT
+
+      # Step 6: Build and push geth-only Docker image (standard)
+      # Mirrors upstream ethereum/client-go image
+      - name: Build and push geth image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64 # Multi-arch like upstream
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            COMMIT=${{ steps.commit_info.outputs.commit }}
+            VERSION=${{ steps.commit_info.outputs.version }}
+            BUILDNUM=${{ steps.commit_info.outputs.buildnum }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Step 7: Build and push alltools Docker image
+      # Mirrors upstream ethereum/client-go:alltools-* image
+      - name: Build and push alltools image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.alltools
+          platforms: linux/amd64,linux/arm64 # Multi-arch like upstream
+          push: true
+          # Use alltools-specific tags with prefix
+          tags: ${{ steps.tags.outputs.alltools_tags }}
+          build-args: |
+            COMMIT=${{ steps.commit_info.outputs.commit }}
+            VERSION=${{ steps.commit_info.outputs.version }}
+            BUILDNUM=${{ steps.commit_info.outputs.buildnum }}
+          cache-from: type=gha,scope=alltools
+          cache-to: type=gha,mode=max,scope=alltools
+
+      # Step 8: Output success message with image details
+      - name: Output image details
+        run: |
+          echo "Docker images built and pushed successfully!"
+          echo ""
+          echo "Geth image tags:"
+          echo "${{ steps.tags.outputs.tags }}"
+          echo ""
+          echo "Alltools image tags:"
+          echo "${{ steps.tags.outputs.alltools_tags }}"
+          echo ""
+          echo "Version: ${{ steps.tags.outputs.version }}"
+          echo "Commit: ${{ steps.commit_info.outputs.commit }}"
+          echo "Build number: ${{ steps.commit_info.outputs.buildnum }}"
